@@ -6,8 +6,14 @@ const CONFIG = {
   // Gmail API
   GMAIL_API_BASE: 'https://gmail.googleapis.com/gmail/v1/users/me',
 
-  // Gmail inbox query - Primary tab only (excludes Social, Promotions, etc.)
-  INBOX_QUERY: 'in:inbox category:primary',
+  // Gmail inbox query - all inbox tabs (Primary filtering happens client-side when PRIMARY_ONLY)
+  INBOX_QUERY: 'in:inbox',
+
+  // When true, only process Primary tab (INBOX without other category labels)
+  PRIMARY_ONLY: true,
+
+  // Category labels that indicate non-Primary tabs (Social, Promotions, etc.)
+  NON_PRIMARY_CATEGORIES: ['CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS'],
 
   // Polling
   POLL_INTERVAL_MINUTES: 2,
@@ -15,6 +21,8 @@ const CONFIG = {
 
   // Processing limits
   MAX_EMAILS_PER_CYCLE: 10,
+  // Pages per block (5 pages = 100 messages). Block must be fully labeled before advancing.
+  MAX_PAGES_PER_BLOCK: 5,
 
   // Classification scoring (BUILD_SPEC section 9)
   SCORES: {
@@ -46,6 +54,7 @@ const CONFIG = {
     SENDER_MAPPINGS: 'senderMappings',
     CACHED_LABELS: 'cachedLabels',
     LAST_PROCESSED_ID: 'lastProcessedId',
+    NEXT_BLOCK_PAGE_TOKEN: 'nextBlockPageToken',
     AUTH_STATUS: 'authStatus',
     DEBUG_MODE: 'debugMode',
   },

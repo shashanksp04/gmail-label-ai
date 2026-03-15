@@ -14,9 +14,16 @@ importScripts(
   '../classifier/classifier_engine.js'
 );
 
-const DEBUG = false;
+const DEBUG = true;
 function log(...args) {
   if (DEBUG) console.log('[LabelPilot]', ...args);
+}
+
+function isPrimaryInboxMessage(meta) {
+  if (!CONFIG.PRIMARY_ONLY) return true;
+  const ids = meta.labelIds || [];
+  if (!ids.includes('INBOX')) return false;
+  return !CONFIG.NON_PRIMARY_CATEGORIES.some((cat) => ids.includes(cat));
 }
 
 /**
@@ -35,9 +42,72 @@ async function ensureAuth() {
 }
 
 /**
- * Scan inbox for unlabeled emails and process them
+ * Process a batch of message refs: label unlabeled Primary emails.
+ * @param {Array} messages - Message refs from Gmail API
+ * @param {Object} ctx - { labels, senderMappings, processedCount }
+ * @returns {{ processedCount: number, tokenExpired: boolean, hitLimit: boolean }}
+ */
+async function processMessageBatch(messages, ctx) {
+  let { processedCount } = ctx;
+  let tokenExpired = false;
+  let hitLimit = false;
+
+  for (const msgRef of messages) {
+    if (processedCount >= CONFIG.MAX_EMAILS_PER_CYCLE) {
+      hitLimit = true;
+      break;
+    }
+    const msgId = msgRef.id;
+
+    try {
+      const meta = await GmailClient.getMessageMetadata(msgId);
+      if (!meta) continue;
+
+      if (!isPrimaryInboxMessage(meta)) continue;
+
+      const userLabels = meta.labelIds.filter((id) => !CONFIG.SYSTEM_LABELS.includes(id));
+      if (userLabels.length > 0) continue;
+
+      log('EMAIL_DETECTED', msgId, meta.subject);
+
+      const result = await ClassifierEngine.classify(meta, ctx.labels, {
+        senderMappings: ctx.senderMappings,
+        threadLabelId: null,
+      });
+
+      if (result) {
+        log('LABEL_SELECTED', result.labelName, 'for', msgId);
+        await GmailClient.applyLabel(msgId, result.labelId);
+        log('LABEL_APPLIED', result.labelName);
+
+        const domain = extractDomain(meta.fromEmail);
+        const excluded = CONFIG.EXCLUDED_SENDER_MAPPING_DOMAINS || [];
+        if (domain && !excluded.includes(domain)) {
+          await StorageManager.addSenderMapping(domain, result.labelId);
+        }
+      }
+
+      processedCount++;
+      ctx.processedCount = processedCount;
+    } catch (err) {
+      log('Error processing', msgId, err.message);
+      if (err.message?.includes('Token expired')) {
+        GmailClient.clearToken();
+        tokenExpired = true;
+        break;
+      }
+    }
+  }
+
+  return { processedCount, tokenExpired, hitLimit };
+}
+
+/**
+ * Scan inbox for unlabeled emails and process them.
+ * Block-based: always check page 1 (new emails) first, then process current block (1-5, 6-10, ...) until fully labeled.
  */
 async function scanInbox() {
+  console.log('[LabelPilot] scanInbox started');
   const authed = await ensureAuth();
   if (!authed) {
     log('Skipping scan: not authenticated');
@@ -55,65 +125,84 @@ async function scanInbox() {
       return;
     }
 
-    const { messages } = await GmailClient.getMessages({
-      maxResults: CONFIG.MAX_EMAILS_PER_CYCLE * 2,
-      q: CONFIG.INBOX_QUERY,
-    });
-
     const senderMappings = await StorageManager.getSenderMappings();
-    const lastProcessedId = await StorageManager.getLastProcessedId();
-    let processedCount = 0;
-    let latestId = lastProcessedId;
+    const ctx = { labels, senderMappings, processedCount: 0 };
+    const maxPages = CONFIG.MAX_PAGES_PER_BLOCK || 5;
 
-    for (const msgRef of messages) {
-      if (processedCount >= CONFIG.MAX_EMAILS_PER_CYCLE) break;
-      const msgId = msgRef.id;
+    // Step 1: Always fetch page 1 (new emails) first
+    const page1Res = await GmailClient.getMessages({
+      maxResults: 20,
+      q: CONFIG.INBOX_QUERY,
+      pageToken: null,
+    });
+    console.log('[LabelPilot] Fetched page 1 (new emails):', page1Res.messages?.length || 0, 'messages');
 
-      try {
-        const meta = await GmailClient.getMessageMetadata(msgId);
-        if (!meta) continue;
+    const batch1 = await processMessageBatch(page1Res.messages || [], ctx);
+    if (batch1.tokenExpired) return;
+    let blockComplete = !batch1.hitLimit;
 
-        // Skip if already has user labels (exclude system labels)
-        const userLabels = meta.labelIds.filter((id) => !CONFIG.SYSTEM_LABELS.includes(id));
-        if (userLabels.length > 0) {
-          latestId = msgId;
-          continue;
-        }
+    let nextBlockToken = await StorageManager.getNextBlockPageToken();
 
-        log('EMAIL_DETECTED', msgId, meta.subject);
+    // Step 2: Block processing
+    if (nextBlockToken === null) {
+      // Block 1: fetch pages 2-5 (page 1 already done)
+      let pageToken = page1Res.nextPageToken;
+      let pageCount = 1;
 
-        const result = await ClassifierEngine.classify(meta, labels, {
-          senderMappings,
-          threadLabelId: null, // TODO: fetch thread labels if needed
+      while (pageToken && pageCount < maxPages && ctx.processedCount < CONFIG.MAX_EMAILS_PER_CYCLE) {
+        const res = await GmailClient.getMessages({
+          maxResults: 20,
+          q: CONFIG.INBOX_QUERY,
+          pageToken,
         });
+        pageCount++;
+        console.log('[LabelPilot] Fetched block 1 page', pageCount, ':', res.messages?.length || 0, 'messages');
 
-        if (result) {
-          log('LABEL_SELECTED', result.labelName, 'for', msgId);
-          await GmailClient.applyLabel(msgId, result.labelId);
-          log('LABEL_APPLIED', result.labelName);
+        const batch = await processMessageBatch(res.messages || [], ctx);
+        if (batch.tokenExpired) return;
+        blockComplete = blockComplete && !batch.hitLimit;
 
-          const domain = extractDomain(meta.fromEmail);
-          const excluded = CONFIG.EXCLUDED_SENDER_MAPPING_DOMAINS || [];
-          if (domain && !excluded.includes(domain)) {
-            await StorageManager.addSenderMapping(domain, result.labelId);
-          }
-        }
+        pageToken = res.nextPageToken;
+      }
 
-        processedCount++;
-        latestId = msgId;
-      } catch (err) {
-        log('Error processing', msgId, err.message);
-        if (err.message?.includes('Token expired')) {
-          GmailClient.clearToken();
-          break;
-        }
+      // Block 1 done when we've fetched all 5 pages AND processed/skipped all (no limit hit)
+      if (pageToken && pageCount >= maxPages && blockComplete) {
+        await StorageManager.setNextBlockPageToken(pageToken);
+        log('Block 1 complete, advancing to block 2');
+      }
+    } else {
+      // Block 2+: fetch 5 pages from stored token
+      let pageToken = nextBlockToken;
+      let pageCount = 0;
+      blockComplete = true;
+
+      while (pageToken && pageCount < maxPages && ctx.processedCount < CONFIG.MAX_EMAILS_PER_CYCLE) {
+        const res = await GmailClient.getMessages({
+          maxResults: 20,
+          q: CONFIG.INBOX_QUERY,
+          pageToken,
+        });
+        pageCount++;
+        console.log('[LabelPilot] Fetched block 2+ page', pageCount, ':', res.messages?.length || 0, 'messages');
+
+        const batch = await processMessageBatch(res.messages || [], ctx);
+        if (batch.tokenExpired) return;
+        blockComplete = blockComplete && !batch.hitLimit;
+
+        pageToken = res.nextPageToken;
+      }
+
+      // Block done when we've fetched all 5 pages AND processed/skipped all; store token for next block
+      if (pageToken && pageCount >= maxPages && blockComplete) {
+        await StorageManager.setNextBlockPageToken(pageToken);
+        log('Block complete, advancing to next block');
+      } else if (!pageToken) {
+        await StorageManager.setNextBlockPageToken(null);
+        log('Reached end of inbox');
       }
     }
-
-    if (latestId) {
-      await StorageManager.setLastProcessedId(latestId);
-    }
   } catch (err) {
+    console.error('[LabelPilot] scanInbox error:', err);
     log('scanInbox error:', err);
     if (err.message?.includes('Token')) {
       await StorageManager.setAuthStatus('needs_auth');

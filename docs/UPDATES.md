@@ -78,6 +78,24 @@
 
 ---
 
+### Block-Based Pagination with New Email Priority
+
+- **Config** — Added `MAX_PAGES_PER_BLOCK: 5`, `PRIMARY_ONLY: true`, storage key `NEXT_BLOCK_PAGE_TOKEN` in `config/constants.js`
+- **Storage** — `getNextBlockPageToken()` and `setNextBlockPageToken(token)` in `storage_manager.js` to persist block progress
+- **Scan Flow** — Each run: (1) Always fetch page 1 first for new emails; (2) Process current block (1-5, 6-10, 11-15...) until fully labeled; (3) Advance to next block only when all emails in block are processed/skipped
+- **Per-Run Limit** — `MAX_EMAILS_PER_CYCLE` (10) caps labels per run; block advances only when limit not hit
+- **Result** — New emails processed every run; blocks processed sequentially until fully labeled; Primary inbox only
+
+---
+
+### LanguageModel API Output Language
+
+- **Offscreen** — Added `expectedOutputs: [{ type: 'text', languages: ['en'] }]` to `LanguageModel.availability()` and `LanguageModel.create()` in `offscreen/offscreen.js`
+- **Popup** — Added same `expectedOutputs` option to `LanguageModel.availability()` in `popup/popup.js`
+- **Result** — Resolves "No output language was specified in a LanguageModel API request" error; supported codes: en, es, ja
+
+---
+
 ### Project Structure
 
 ```

@@ -51,6 +51,25 @@ const StorageManager = {
   },
 
   /**
+   * Get page token for next block (pages 6-10, 11-15, etc.)
+   */
+  async getNextBlockPageToken() {
+    const result = await chrome.storage.local.get(CONFIG.STORAGE_KEYS.NEXT_BLOCK_PAGE_TOKEN);
+    return result[CONFIG.STORAGE_KEYS.NEXT_BLOCK_PAGE_TOKEN] || null;
+  },
+
+  /**
+   * Set page token for next block
+   */
+  async setNextBlockPageToken(token) {
+    if (token) {
+      await chrome.storage.local.set({ [CONFIG.STORAGE_KEYS.NEXT_BLOCK_PAGE_TOKEN]: token });
+    } else {
+      await chrome.storage.local.remove(CONFIG.STORAGE_KEYS.NEXT_BLOCK_PAGE_TOKEN);
+    }
+  },
+
+  /**
    * Get auth status
    */
   async getAuthStatus() {

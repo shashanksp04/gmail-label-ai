@@ -14,7 +14,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         aiStatusEl.textContent = 'AI: Not available (Chrome 138+ required)';
         return;
       }
-      const availability = await LanguageModel.availability?.();
+      const availability = await LanguageModel.availability?.({ expectedOutputs: [{ type: 'text', languages: ['en'] }] });
       if (['readily', 'available'].includes(availability)) {
         aiStatusEl.textContent = 'AI: Ready';
       } else if (['after-download', 'downloadable'].includes(availability)) {

@@ -27,7 +27,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, label: null });
         return;
       }
-      const availability = await LanguageModel.availability?.();
+      const modelOptions = { expectedOutputs: [{ type: 'text', languages: ['en'] }] };
+      const availability = await LanguageModel.availability?.(modelOptions);
       const usable = ['readily', 'after-download', 'available', 'downloadable'].includes(availability);
       if (!usable) {
         sendResponse({ ok: false, label: null });
@@ -43,7 +44,7 @@ Choose the most appropriate label from this exact list: ${labelNames}
 
 Return ONLY the label name, nothing else.`;
 
-      const session = await LanguageModel.create();
+      const session = await LanguageModel.create(modelOptions);
       const response = await session.prompt([{ role: 'user', content: prompt }]);
       const chosenName = (response || '').trim().replace(/^["']|["']$/g, '');
       const match = labels.find((l) => normalizeText(l.name) === normalizeText(chosenName));
