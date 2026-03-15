@@ -1,0 +1,5 @@
+chrome://on-device-internals/ - to check the staus
+
+Always reload the extension after updates
+
+service worker : const session = await LanguageModel.create(); - to load the model
