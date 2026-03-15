@@ -1,0 +1,29 @@
+{
+  "name": "LabelPilot",
+  "version": "1.0.0",
+  "description": "Automatically labels Gmail emails using AI and deterministic matching",
+  "manifest_version": 3,
+  "permissions": [
+    "identity",
+    "storage",
+    "alarms",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "https://gmail.googleapis.com/*"
+  ],
+  "oauth2": {
+    "client_id": "1016184973458-pfhhb3qksb0hqd30d3j6p2t2lcr5c2at.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/gmail.modify",
+      "https://www.googleapis.com/auth/gmail.labels"
+    ]
+  },
+  "background": {
+    "service_worker": "background/service_worker.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "LabelPilot"
+  }
+}
