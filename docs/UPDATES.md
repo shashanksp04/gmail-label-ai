@@ -1,5 +1,7 @@
 # LabelPilot - Update Log
 
+> This file records historical changes. The current implementation status is tracked in [README_REDESIGN.md](../README_REDESIGN.md); current code architecture is described in [context.md](../context.md).
+
 ## 2026-03-15 14:03
 
 ### Initial Release & Feature Updates
@@ -110,3 +112,30 @@ gmail-label-ai/
 ├── config/constants.js
 └── popup/popup.html, popup.js
 ```
+
+## 2026-09-13 — v2 architecture implementation (in progress)
+
+### Implemented in the repository
+
+- Added a TypeScript/Vite build, strict type checking, ESLint, and Vitest.
+- Added a new typed `src/` architecture and kept v1 flat storage separate under a fresh `labelpilot.v2` namespace.
+- Added initial account link/list/switch/unlink flows, account-scoped labels, mappings, settings, and pagination state.
+- Added a typed Gmail REST client/parser, profile verification, normalized error categories, and bounded retries.
+- Added deterministic classification results with skip reasons and a preview scan that does not call Gmail label modification.
+- Added optional Prompt API handoff, click-triggered initialization, exact existing-label-ID validation, and structured per-account activity events.
+- Added basic popup controls for account actions, preview, automation, AI initialization, label refresh, and recent activity.
+- Added seven unit tests for parser, matching, utility, and account-schema behavior.
+
+### Known gaps — not yet release-ready
+
+- Multi-account token selection and restoration after service-worker restart need live Chrome verification and likely further implementation. Never assume the account-switching requirement is complete based on UI presence alone.
+- Preview decisions are logged but not shown in a readable proposal/review list.
+- Account switching/unlinking does not cancel or wait for active scan work; pagination and concurrency boundaries are not covered by tests.
+- Prompt API structured output constraints, complete readiness-state handling, and actual offscreen runtime compatibility need work and browser verification.
+- Reset-all has no popup control; activity filtering/export and automated redaction checks are absent.
+- Current tests do not exercise Chrome Identity, Gmail API integration, account lifecycle, storage integration, scans, pagination, retries, or AI messaging.
+- Browser/Gmail manual validation has not been completed.
+
+### Verification snapshot
+
+At the time of this entry, `npm test` (7 tests), `npm run lint`, `npm run typecheck`, and `npm run build` pass locally. This confirms compilation and unit-level behavior only; it does not establish live extension readiness.

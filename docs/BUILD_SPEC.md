@@ -1,593 +1,66 @@
-# BUILD_SPEC.md
+# LabelPilot v2 build specification
 
-**Project:** LabelPilot
-**Type:** Chrome Extension
-**Purpose:** Define the technical architecture and implementation details required to build the MVP.
+**Status:** Target architecture for the v2 redesign. The implementation is partial; see [README_REDESIGN.md](../README_REDESIGN.md) for status and gaps. Last reviewed 2026-09-13.
 
----
+## Runtime architecture
 
-# 1. System Overview
+Manifest V3, TypeScript, Vite, Vitest, ESLint, and Prettier. The service worker coordinates operations; modules isolate account/token handling, Gmail REST access, parsing, classification, AI messaging, storage, and logging. The popup is the user-facing control surface. An offscreen document is used for Prompt API requests.
 
-LabelPilot is a **Chrome extension that automatically labels Gmail emails** using a layered classification pipeline.
+All logic remains local to the extension except Gmail API requests. The extension does not fetch full message bodies and has no backend or cloud AI dependency.
 
-The extension operates entirely on the client and performs the following workflow:
+## Build and public interfaces
 
-1. Authenticate with Gmail
-2. Retrieve user-created labels
-3. Monitor emails requiring labeling
-4. Extract email metadata
-5. Evaluate candidate labels
-6. Optionally use Chrome built-in AI
-7. Apply the selected label
+Commands:
 
-All logic runs **locally inside the Chrome extension**.
-
----
-
-# 2. High-Level Architecture
-
-```
-Chrome Extension
-│
-├── Background Service Worker
-│   ├── Gmail polling
-│   ├── email processing queue
-│   ├── label classification
-│   └── Gmail API interaction
-│
-├── OAuth Handler
-│   └── Gmail authentication
-│
-├── Classification Engine
-│   ├── deterministic matcher
-│   ├── sender association mapping
-│   └── AI fallback
-│
-└── Storage Layer
-    └── local extension storage
+```bash
+npm run typecheck
+npm test
+npm run lint
+npm run build
 ```
 
----
+The production build is `dist/`, loaded as an unpacked extension. Account/runtime messages currently include `LINK_ACCOUNT`, `LIST_ACCOUNTS`, `SWITCH_ACCOUNT`, `UNLINK_ACCOUNT`, `PREVIEW_SCAN`, `SCAN_NOW`, `GET_ACTIVITY`, `SET_AUTOMATION`, `REFRESH_LABELS`, and `RESET_ALL`.
 
-# 3. Chrome Extension Structure
+The intended classification result is:
 
-```
-labelpilot-extension/
-│
-├── manifest.json
-├── background/
-│   └── service_worker.js
-│
-├── gmail/
-│   ├── gmail_client.js
-│   └── gmail_parser.js
-│
-├── classifier/
-│   ├── classifier_engine.js
-│   ├── deterministic_matcher.js
-│   └── ai_fallback.js
-│
-├── storage/
-│   └── storage_manager.js
-│
-├── utils/
-│   └── text_utils.js
-│
-└── config/
-    └── constants.js
-```
-
----
-
-# 4. Chrome Extension Configuration
-
-### Manifest Version
-
-Use **Manifest V3**.
-
----
-
-### Required Permissions
-
-```
-{
-  "permissions": [
-    "identity",
-    "storage",
-    "alarms"
-  ],
-  "host_permissions": [
-    "https://gmail.googleapis.com/*"
-  ]
+```ts
+interface ClassificationResult {
+  decision: 'label' | 'skip';
+  labelId: string | null;
+  confidence: number | null;
+  source: 'deterministic' | 'ai' | 'none';
+  reason: string;
 }
 ```
 
----
+## Account state and authentication
 
-### OAuth Scopes
+Persist a versioned root state under `labelpilot.v2` with one account context per verified Gmail profile. Keep tokens only in Chrome Identity's cache or service-worker memory. Before Gmail mutation, verify the token's Gmail profile matches the selected account. Account context includes labels, sender mappings, pagination, per-account automation/primary/AI settings, and timestamps. Activity uses separately bounded per-account storage.
 
-Minimum Gmail scopes required:
+The implementation currently uses Gmail email as the local account key and Chrome Identity token requests, but exact token-to-account selection has not been proven across worker restarts or secondary accounts. That is a release blocker, not a solved property.
 
-```
-https://www.googleapis.com/auth/gmail.modify
-https://www.googleapis.com/auth/gmail.labels
-```
+Do not migrate legacy prototype data automatically. A reset-all message exists; add an explicit confirmed UI before calling the control complete.
 
-These allow:
+## Scan and classification requirements
 
-* reading message metadata
-* retrieving labels
-* applying labels
+- Allow only one scan at a time; make account switch/unlink coordinate with active work.
+- Support preview and automatic modes. Preview must never call the Gmail modify endpoint and must display proposals before automation is enabled.
+- Use account-scoped pagination and enforce the per-cycle message limit without cursor loss or starvation.
+- Ignore system labels when deciding whether a message already has a user label.
+- Apply only an existing current-account Gmail label after successful classification.
+- Deterministic matcher runs first. Ties, low confidence, missing labels, and malformed output must skip.
+- Store a sender-domain mapping only after Gmail confirms label application, and only for non-excluded domains.
 
----
+Current scan logic is concentrated in the background service worker. It has a basic mutex and preview writes no labels, but proposal rendering, scan-cancellation/account locking, and pagination edge-case tests remain incomplete.
 
-# 5. Authentication Flow
+## Chrome built-in AI requirements
 
-Authentication uses **Chrome Identity API**.
+Represent unsupported, unavailable, downloadable, downloading, available, initializing, ready, and failed states explicitly. Start model initialization/download only from a user-activated UI action when Chrome requires it. Send metadata as untrusted data, provide only current-account label candidates, validate the response against exact existing label IDs, apply a timeout, and clean up sessions where supported. AI failure must degrade to deterministic-only classification.
 
-### Flow
+The current popup initializes on click and the offscreen code checks availability and exact label IDs, but structured `responseConstraint`, full state reporting, cancellation, and Chrome runtime validation are not complete.
 
-1. User installs extension
-2. Extension triggers OAuth login
-3. User grants Gmail permissions
-4. Extension receives access token
-5. Token stored temporarily in extension memory
+## Logging, errors, and verification
 
-### Token Refresh
+Log structured account/run/message-correlated events for auth, label sync, scan, eligibility, classification, AI, and label application. Bound retention and redact tokens, bodies, snippets, and unnecessary personal data. Add tests for redaction and event behavior.
 
-If token expires:
-
-* re-request token via Chrome Identity API
-
----
-
-# 6. Gmail API Integration
-
-The extension communicates with Gmail via the **Gmail REST API**.
-
----
-
-## 6.1 Retrieve Labels
-
-Endpoint:
-
-```
-GET https://gmail.googleapis.com/gmail/v1/users/me/labels
-```
-
-Filter:
-
-* exclude system labels
-* keep only user-created labels
-
-Store:
-
-```
-label_id
-label_name
-normalized_label_name
-```
-
----
-
-## 6.2 Detect Emails Requiring Labeling
-
-Use message list endpoint:
-
-```
-GET /gmail/v1/users/me/messages
-```
-
-Query parameters:
-
-```
-q=-label:inbox_category OR custom filtering
-```
-
-More practical approach:
-
-Retrieve:
-
-```
-messages in INBOX
-```
-
-Then filter messages:
-
-* without user labels
-
----
-
-## 6.3 Retrieve Message Metadata
-
-Endpoint:
-
-```
-GET /gmail/v1/users/me/messages/{id}
-```
-
-Use:
-
-```
-format=metadata
-```
-
-Retrieve:
-
-* subject
-* from
-* snippet
-* threadId
-
----
-
-## 6.4 Apply Label
-
-Endpoint:
-
-```
-POST /gmail/v1/users/me/messages/{id}/modify
-```
-
-Payload:
-
-```
-{
-  "addLabelIds": ["LABEL_ID"]
-}
-```
-
----
-
-# 7. Email Processing Pipeline
-
-Each email flows through the following pipeline.
-
-```
-email detected
-    ↓
-metadata extraction
-    ↓
-candidate label scoring
-    ↓
-deterministic match
-    ↓
-AI fallback (optional)
-    ↓
-confidence evaluation
-    ↓
-apply label
-```
-
----
-
-# 8. Deterministic Matching
-
-Deterministic matching evaluates labels using text similarity.
-
-### Inputs
-
-```
-label_name
-subject
-sender_name
-sender_email
-snippet
-```
-
-### Matching Strategies
-
-#### Exact Match
-
-```
-subject contains label name
-```
-
-#### Normalized Match
-
-Remove:
-
-* punctuation
-* casing
-* whitespace
-
-Example:
-
-```
-"AI Report"
-"AIReport"
-```
-
-#### Sender Match
-
-Compare label against:
-
-* sender display name
-* sender domain
-
-Example:
-
-```
-newsletter@alphasignal.ai
-→ AlphaSignal
-```
-
----
-
-# 9. Label Scoring
-
-Each label receives a score based on signals.
-
-Example scoring model:
-
-| Signal                    | Score |
-| ------------------------- | ----- |
-| subject match             | +50   |
-| sender name match         | +40   |
-| sender domain match       | +40   |
-| snippet similarity        | +20   |
-| thread match              | +30   |
-| historical sender mapping | +60   |
-
-Highest score wins.
-
-Minimum threshold required for application.
-
----
-
-# 10. Historical Sender Mapping
-
-Extension stores sender-label mappings locally.
-
-Example:
-
-```
-news@tldrnewsletter.com → TLDR
-```
-
-Storage location:
-
-```
-chrome.storage.local
-```
-
-Data structure:
-
-```
-{
-  sender_domain: label_id
-}
-```
-
-Mappings updated whenever a label is applied.
-
----
-
-# 11. AI Fallback
-
-If deterministic scoring fails to produce a confident label:
-
-Use **Chrome built-in AI**.
-
-### Input
-
-```
-email metadata
-list of labels
-```
-
-### Prompt Strategy
-
-AI must:
-
-* choose from provided labels
-* return exactly one label
-
-Example prompt structure:
-
-```
-Email Subject: {subject}
-Sender: {sender}
-Snippet: {snippet}
-
-Choose the most appropriate label from this list:
-
-[label1, label2, label3...]
-
-Return only the label name.
-```
-
----
-
-# 12. Email Monitoring Strategy
-
-Use **Chrome alarms** to trigger periodic checks.
-
-Example interval:
-
-```
-every 2 minutes
-```
-
-Alarm handler triggers:
-
-```
-scanInbox()
-```
-
-Processing steps:
-
-1. fetch recent emails
-2. filter unlabeled emails
-3. run classification pipeline
-
----
-
-# 13. Storage Layer
-
-Use:
-
-```
-chrome.storage.local
-```
-
-Store:
-
-* sender-label mappings
-* cached labels
-* processing checkpoints
-
----
-
-# 14. Error Handling
-
-Handle the following scenarios.
-
-### Gmail API Errors
-
-Retry with exponential backoff.
-
----
-
-### Token Expiration
-
-Re-run OAuth flow.
-
----
-
-### AI Unavailable
-
-Fallback to deterministic classifier only.
-
----
-
-### Rate Limits
-
-Reduce polling frequency.
-
----
-
-# 15. Performance Considerations
-
-### Avoid Reprocessing Emails
-
-Store last processed message ID.
-
----
-
-### Process Emails in Batches
-
-Limit each cycle:
-
-```
-max 10 emails
-```
-
----
-
-### Lightweight Metadata
-
-Avoid downloading full message body.
-
----
-
-# 16. Security Considerations
-
-The extension must:
-
-* request minimal Gmail scopes
-* store tokens only in memory
-* avoid logging sensitive email data
-* perform processing locally
-
----
-
-# 17. Logging and Debugging
-
-Add lightweight debug logs.
-
-Example logs:
-
-```
-EMAIL_DETECTED
-CLASSIFICATION_STARTED
-LABEL_SELECTED
-LABEL_APPLIED
-AI_FALLBACK_TRIGGERED
-```
-
-Logging can be toggled via a debug flag.
-
----
-
-# 18. Development Milestones
-
-### Milestone 1 — Extension Skeleton
-
-* manifest setup
-* service worker
-* OAuth integration
-
----
-
-### Milestone 2 — Gmail Integration
-
-* fetch labels
-* fetch messages
-* apply labels
-
----
-
-### Milestone 3 — Deterministic Classifier
-
-* subject matching
-* sender matching
-* scoring system
-
----
-
-### Milestone 4 — Automation Loop
-
-* inbox polling
-* processing queue
-
----
-
-### Milestone 5 — AI Integration
-
-* Chrome AI fallback
-* label selection
-
----
-
-# 19. Estimated Build Time
-
-Total development effort:
-
-**3–5 days**
-
-Breakdown:
-
-| Task                   | Time    |
-| ---------------------- | ------- |
-| Chrome extension setup | 4 hours |
-| OAuth + Gmail API      | 1 day   |
-| classification engine  | 1 day   |
-| automation loop        | 0.5 day |
-| AI fallback            | 0.5 day |
-| testing & debugging    | 1 day   |
-
----
-
-# 20. Completion Criteria
-
-The build is considered complete when:
-
-* the extension authenticates with Gmail
-* labels are retrieved correctly
-* emails are detected automatically
-* classification selects appropriate labels
-* labels are applied automatically
-* the extension runs continuously without manual intervention
-
----
+Required tests include parsing, scoring, ties/thresholds, AI response validation, account storage isolation, token/profile matching, pagination/limits, scan locking, preview non-mutation, retries, error normalization, and failure logging. Run the manual checklist in [README_REDESIGN.md](../README_REDESIGN.md) on current supported Chrome with real Gmail test accounts before release.

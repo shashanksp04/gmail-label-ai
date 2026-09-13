@@ -1,119 +1,55 @@
 # LabelPilot
 
-A Chrome extension that automatically labels Gmail emails using deterministic matching and optional Chrome built-in AI.
+LabelPilot is a Manifest V3 Chrome extension prototype that classifies Gmail inbox messages with deterministic rules and optional Chrome built-in AI. It is client-only: message metadata is fetched from Gmail, classification runs locally, and labels are applied through Gmail's API only when automation is enabled.
 
-## Features
+## Current status
 
-- **Automatic labeling** — Runs in the background, no manual interaction needed
-- **Deterministic matching** — Subject, sender, snippet, and historical sender associations
-- **Chrome built-in AI** — Uses offscreen document to run Gemini Nano when deterministic signals are insufficient
-- **Manage mappings** — View and remove sender→label mappings in the popup
-- **Excluded domains** — Superhuman, LinkedIn, etc. don't get permanent mappings (configurable)
-- **Local processing** — All logic runs in the extension, no backend required
+The v2 architecture and first implementation are in place, but this is **not yet release-ready**. In particular, live multi-account token selection/switching, a useful preview review screen, and Chrome AI behavior still require implementation hardening and manual browser validation. See [README_REDESIGN.md](README_REDESIGN.md) for the authoritative implementation checklist and known gaps.
 
-## Setup
+## Development and loading
 
-### 1. Create OAuth credentials
+Requirements: Node.js/npm and a desktop Chrome version that supports the APIs used by the extension.
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing
-3. Enable **Gmail API** (APIs & Services → Library → search "Gmail API")
-4. Go to **APIs & Services → Credentials → Create Credentials → OAuth client ID**
-5. Choose **Chrome extension** as application type
-6. You'll need your extension ID:
-   - Load the extension unpacked in Chrome (`chrome://extensions` → Load unpacked)
-   - Copy the extension ID
-   - Use it when creating the OAuth client
-7. Copy the **Client ID** (e.g. `xxxxx.apps.googleusercontent.com`)
-
-### 2. Configure the extension
-
-Edit `manifest.json` and replace `YOUR_CLIENT_ID.apps.googleusercontent.com` with your actual Client ID:
-
-```json
-"oauth2": {
-  "client_id": "YOUR_ACTUAL_CLIENT_ID.apps.googleusercontent.com",
-  "scopes": [
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/gmail.labels"
-  ]
-}
+```bash
+npm install
+npm run typecheck
+npm test
+npm run lint
+npm run build
 ```
 
-### 3. Load the extension
+In `chrome://extensions`, enable Developer mode and load the generated `dist/` directory as an unpacked extension. Configure the OAuth client ID in `manifest.json` for the unpacked extension ID and ensure Gmail API and the declared scopes are enabled in the associated Google Cloud project.
 
-1. Open `chrome://extensions`
-2. Enable **Developer mode**
-3. Click **Load unpacked**
-4. Select the `gmail-label-ai` folder
+## Intended user workflow
 
-### 4. Sign in
+1. Link a Gmail account from the popup.
+2. Load that account's Gmail labels.
+3. Run a preview scan and inspect proposed labels/activity.
+4. Explicitly enable automation when satisfied.
+5. Switch accounts without sharing labels, mappings, pagination, settings, or activity.
 
-1. Click the LabelPilot icon in the toolbar
-2. Click **Sign in to Gmail**
-3. Grant the requested permissions
+The current popup exposes linking, account selection, preview triggering, automation toggle, label refresh, unlinking, AI initialization, and recent activity. Preview results are currently recorded as activity metadata but are not yet rendered as a clear proposal list; treat this workflow as incomplete until that is fixed.
 
-After signing in, the extension will poll your inbox every 2 minutes and automatically apply labels to unlabeled emails.
+## Architecture
 
-## Project structure
+- `src/background/`: MV3 service worker and message routing.
+- `src/auth/`: account linking and in-memory token handling.
+- `src/gmail/`: typed Gmail API client and parsers.
+- `src/scanning/`: reserved for scan coordination as the implementation is decomposed further; current orchestration is in the service worker.
+- `src/classification/`: deterministic matching and AI fallback coordination.
+- `src/ai/`: Prompt API initialization and offscreen document communication.
+- `src/storage/`: versioned `labelpilot.v2` account state and activity storage.
+- `src/logging/`: structured local activity events.
+- `src/popup/`: account, preview, automation, AI, and activity controls.
+- `tests/`: current unit tests for utilities, Gmail parsing, classification, and schema isolation.
 
-```
-gmail-label-ai/
-├── manifest.json
-├── background/
-│   └── service_worker.js
-├── offscreen/
-│   ├── offscreen.html
-│   └── offscreen.js      # Chrome AI (Prompt API) runs here
-├── gmail/
-│   ├── gmail_client.js
-│   └── gmail_parser.js
-├── classifier/
-│   ├── classifier_engine.js
-│   ├── deterministic_matcher.js
-│   └── ai_fallback.js
-├── storage/
-│   └── storage_manager.js
-├── utils/
-│   └── text_utils.js
-├── config/
-│   └── constants.js
-└── popup/
-    ├── popup.html
-    └── popup.js
-```
+## Privacy and safety
 
-## How it works
-
-1. **Email detection** — Polls Gmail inbox for emails without user-applied labels
-2. **Metadata extraction** — Gets subject, sender, and snippet (no full body)
-3. **Classification** — Scores labels using:
-   - Subject similarity
-   - Sender name/domain matching
-   - Snippet similarity
-   - Historical sender→label mappings
-4. **Label application** — Applies the highest-scoring label if confidence exceeds threshold
-5. **Learning** — Stores sender→label mappings for future emails
-
-## Configuration
-
-Edit `config/constants.js` to adjust:
-
-- `POLL_INTERVAL_MINUTES` — How often to scan (default: 2)
-- `MAX_EMAILS_PER_CYCLE` — Emails to process per run (default: 10)
-- `MIN_CONFIDENCE_THRESHOLD` — Minimum score to apply a label (default: 55)
-- `EXCLUDED_SENDER_MAPPING_DOMAINS` — Domains that won't get permanent mappings (Superhuman, LinkedIn, etc.)
-- `MIN_LABEL_MATCH_LENGTH` — Minimum label length for subject/snippet matching (avoids false matches)
-
-## Chrome built-in AI
-
-The extension uses an offscreen document to run Chrome's Prompt API (Gemini Nano) when deterministic matching doesn't produce a confident result. Requirements:
-
-- Chrome 138+
-- 22+ GB free storage
-- 16GB RAM + 4 cores, or 4GB+ VRAM
-
-The popup shows AI status (Ready, Downloading, etc.). Add more domains to `EXCLUDED_SENDER_MAPPING_DOMAINS` if you see incorrect mappings from senders that send diverse content.
+- No backend or external AI provider is used.
+- Classification uses sender, subject, snippet, and Gmail label metadata; it does not fetch full message bodies.
+- AI is optional. Invalid, unavailable, or failed AI results are not applied.
+- Sender mappings and extension state are stored locally per linked account.
+- Do not enable automatic labeling until the account, preview, and failure paths have been manually checked in Chrome.
 
 ## License
 
